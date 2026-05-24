@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-noto: 'Noto Sans Georgian', 'Noto Sans', system-ui, sans-serif;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+    font-family: var(--font-noto);
+  }
+
+  /* Smooth scrollbar */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent;
+  }
+}
+
+/* Typing cursor animation for streaming */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.cursor-blink::after {
+  content: '|';
+  @apply text-brand-500;
+  animation: blink 1s step-end infinite;
+}
