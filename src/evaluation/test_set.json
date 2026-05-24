@@ -1,0 +1,82 @@
+[
+  {
+    "id": "Q001",
+    "question": "What is the income tax rate for an Individual Entrepreneur with Small Business status in Georgia?",
+    "reference_answer": "An Individual Entrepreneur with Small Business status pays income tax at 1% on turnover (up to the turnover threshold). This rate is provided under the relevant articles of the Georgian Tax Code governing small business taxation.",
+    "required_citations": ["Tax Code"],
+    "category": "small_business_rate",
+    "language": "en"
+  },
+  {
+    "id": "Q002",
+    "question": "What is the VAT registration threshold for individual entrepreneurs in Georgia?",
+    "reference_answer": "An individual entrepreneur becomes obligated to register as a VAT payer when their annual taxable turnover exceeds 100,000 GEL. This threshold is established in the Georgian Tax Code.",
+    "required_citations": ["Tax Code"],
+    "category": "vat",
+    "language": "en"
+  },
+  {
+    "id": "Q003",
+    "question": "How does a freelancer with Small Business status in Georgia declare foreign-source income?",
+    "reference_answer": "Foreign-source income received by a Georgian resident individual entrepreneur is subject to Georgian income tax. The taxpayer must include such income in their annual declaration. The applicable form is the income tax declaration submitted by April 1 of the following year.",
+    "required_citations": ["Tax Code"],
+    "category": "foreign_income",
+    "language": "en"
+  },
+  {
+    "id": "Q004",
+    "question": "What is the deadline for filing an income tax declaration for an individual entrepreneur in Georgia?",
+    "reference_answer": "The annual income tax declaration for individual entrepreneurs must be filed by April 1 of the year following the reporting year. Quarterly advance payments may also be required.",
+    "required_citations": ["Tax Code"],
+    "category": "deadlines",
+    "language": "en"
+  },
+  {
+    "id": "Q005",
+    "question": "Can a Georgian IT freelancer maintain Small Business status if they earn over 500,000 GEL annually?",
+    "reference_answer": "Small Business status has a turnover threshold. If annual turnover exceeds the threshold set by the Tax Code (currently 500,000 GEL), the taxpayer loses Small Business status and must transition to standard Individual Entrepreneur taxation.",
+    "required_citations": ["Tax Code"],
+    "category": "small_business_eligibility",
+    "language": "en"
+  },
+  {
+    "id": "Q006",
+    "question": "მცირე ბიზნესის სტატუსის მქონე ინდივიდუალური მეწარმის საშემოსავლო გადასახადის განაკვეთი რა არის?",
+    "reference_answer": "მცირე ბიზნესის სტატუსის მქონე ინდივიდუალური მეწარმე იხდის 1%-ს ბრუნვაზე. ეს განაკვეთი განსაზღვრულია საქართველოს საგადასახადო კოდექსით.",
+    "required_citations": ["საგადასახადო კოდექსი"],
+    "category": "small_business_rate",
+    "language": "ka"
+  },
+  {
+    "id": "Q007",
+    "question": "რა ვადაში უნდა წარდგინოს ინდივიდუალური მეწარმემ საშემოსავლო გადასახადის დეკლარაცია?",
+    "reference_answer": "ინდივიდუალური მეწარმე ვალდებულია საშემოსავლო გადასახადის წლიური დეკლარაცია წარადგინოს საანგარიშო წლის მომდევნო წლის 1 აპრილამდე.",
+    "required_citations": ["საგადასახადო კოდექსი"],
+    "category": "deadlines",
+    "language": "ka"
+  },
+  {
+    "id": "Q008",
+    "question": "What penalties apply if an individual entrepreneur fails to register for VAT after exceeding the threshold?",
+    "reference_answer": "Failure to register for VAT after exceeding the 100,000 GEL threshold results in penalties under the Georgian Tax Code. The taxpayer may be assessed unpaid VAT plus interest and administrative penalties.",
+    "required_citations": ["Tax Code"],
+    "category": "penalties",
+    "language": "en"
+  },
+  {
+    "id": "Q009",
+    "question": "Does a Georgian IT freelancer receiving payments via PayPal from foreign clients need to pay VAT?",
+    "reference_answer": "Services provided to non-Georgian (foreign) clients are generally considered to be supplied outside Georgia for VAT purposes, and are therefore zero-rated or exempt from Georgian VAT. However, VAT registration obligations still depend on total annual turnover threshold.",
+    "required_citations": ["Tax Code"],
+    "category": "vat",
+    "language": "en"
+  },
+  {
+    "id": "Q010",
+    "question": "What is the difference between Individual Entrepreneur status and Small Business status in Georgia?",
+    "reference_answer": "Individual Entrepreneur (IE) is a legal registration form for self-employed individuals. Small Business is a special tax status that an IE can apply for if their annual turnover is below the threshold. Small Business status allows the taxpayer to pay a simplified 1% tax on turnover instead of standard progressive income tax rates.",
+    "required_citations": ["Tax Code"],
+    "category": "status_comparison",
+    "language": "en"
+  }
+]
