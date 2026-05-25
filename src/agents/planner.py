@@ -15,9 +15,9 @@ from src.config import get_settings
 log = logging.getLogger(__name__)
 
 
-def planner_node(state: AgentState) -> dict:
+async def planner_node(state: AgentState) -> dict:
     settings = get_settings()
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     messages = build_planner_messages(
         user_query=state["user_query"],
@@ -26,7 +26,7 @@ def planner_node(state: AgentState) -> dict:
         failed_check=state.get("failed_check", ""),
     )
 
-    response = client.messages.create(
+    response = await client.messages.create(
         model=settings.planner_model,
         max_tokens=1024,
         system=[

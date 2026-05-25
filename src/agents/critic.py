@@ -16,9 +16,9 @@ from src.config import get_settings
 log = logging.getLogger(__name__)
 
 
-def critic_node(state: AgentState) -> dict:
+async def critic_node(state: AgentState) -> dict:
     settings = get_settings()
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     draft = state.get("draft_answer", "")
     chunks = state.get("retrieved_chunks", [])
@@ -39,7 +39,7 @@ def critic_node(state: AgentState) -> dict:
         sub_queries=sub_queries,
     )
 
-    response = client.messages.create(
+    response = await client.messages.create(
         model=settings.critic_model,
         max_tokens=512,
         system=[

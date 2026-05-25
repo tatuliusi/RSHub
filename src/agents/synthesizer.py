@@ -5,7 +5,6 @@ Uses Claude Sonnet 4.6 with prompt caching on the system prompt.
 
 import logging
 import re
-from dataclasses import asdict
 
 import anthropic
 
@@ -19,35 +18,51 @@ log = logging.getLogger(__name__)
 CITATION_PATTERN = re.compile(r"\[([^\]]+)\]")
 
 
+def _match_citation(cited: str, chunk) -> bool:
+    """Returns True if `cited` (text inside brackets) refers to this chunk."""
+    cited_lower = cited.lower()
+    if chunk.article_number:
+        # Require word-boundary match: "article 91" must not match "article 910"
+        pattern = r"(?:article|მუხლი)\s+" + re.escape(chunk.article_number) + r"\b"
+        if re.search(pattern, cited_lower, re.IGNORECASE | re.UNICODE):
+            return True
+    # Title match only when title is long enough to be unambiguous
+    if chunk.title and len(chunk.title) > 3:
+        if chunk.title.lower() in cited_lower:
+            return True
+    return False
+
+
 def _extract_sources(answer: str, chunks: list) -> list[Source]:
     """Extracts source metadata for all cited articles in the answer."""
-    cited_texts = CITATION_PATTERN.findall(answer)
+    # Filter to bracket contents that look like citations (not markdown links)
+    raw_cited = CITATION_PATTERN.findall(answer)
+    # Exclude markdown-style link labels "[text](url)" by checking next char would be "("
+    # CITATION_PATTERN.findall already strips the brackets, so just filter obvious non-citations
+    cited_texts = [c for c in raw_cited if "http" not in c and len(c) > 2]
+
     sources: list[Source] = []
     seen_urls: set[str] = set()
 
     for chunk in chunks:
         for cited in cited_texts:
-            cited_lower = cited.lower()
-            if (
-                chunk.article_number and chunk.article_number in cited
-            ) or chunk.title.lower() in cited_lower:
-                if chunk.url not in seen_urls:
-                    seen_urls.add(chunk.url)
-                    sources.append(
-                        Source(
-                            article_number=chunk.article_number,
-                            title=chunk.title,
-                            url=chunk.url,
-                            source_type=chunk.source,
-                            last_modified=chunk.last_modified,
-                        )
+            if _match_citation(cited, chunk) and chunk.url not in seen_urls:
+                seen_urls.add(chunk.url)
+                sources.append(
+                    Source(
+                        article_number=chunk.article_number,
+                        title=chunk.title,
+                        url=chunk.url,
+                        source_type=chunk.source,
+                        last_modified=chunk.last_modified,
                     )
+                )
     return sources
 
 
-def synthesizer_node(state: AgentState) -> dict:
+async def synthesizer_node(state: AgentState) -> dict:
     settings = get_settings()
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     sub_queries = state.get("sub_queries", [])
     chunks = state.get("retrieved_chunks", [])
@@ -66,7 +81,7 @@ def synthesizer_node(state: AgentState) -> dict:
         chunks=chunks,
     )
 
-    response = client.messages.create(
+    response = await client.messages.create(
         model=settings.synthesizer_model,
         max_tokens=2048,
         system=[
