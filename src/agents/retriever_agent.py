@@ -4,6 +4,7 @@ This is a pure Python function, not an LLM agent.
 Uses a thread pool so CPU-bound embedding work doesn't block the event loop.
 """
 
+import atexit
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
@@ -16,6 +17,7 @@ log = logging.getLogger(__name__)
 
 # Shared executor for embedding work (CPU-bound, not I/O-bound)
 _executor = ThreadPoolExecutor(max_workers=4)
+atexit.register(_executor.shutdown, wait=False)
 
 
 def _retrieve_for_subquery(sub_query: SubQuery) -> list[RetrievedChunk]:
@@ -54,7 +56,8 @@ def _retrieve_for_subquery(sub_query: SubQuery) -> list[RetrievedChunk]:
 async def retriever_node_async(state: AgentState) -> dict:
     """
     Async version: dispatches all sub-query retrievals to the thread pool in parallel.
-    Used when the graph is run with ainvoke/astream.
+    On critic retries, accumulates chunks from previous iterations so the synthesizer
+    has an ever-growing context rather than re-fetching identical results.
     """
     import asyncio
 
@@ -70,19 +73,24 @@ async def retriever_node_async(state: AgentState) -> dict:
     ]
     all_results = await asyncio.gather(*tasks)
 
-    # Merge and deduplicate by chunk_id, keeping best score
-    seen: dict[str, RetrievedChunk] = {}
+    # Start from chunks already collected in previous iterations
+    accumulated: dict[str, RetrievedChunk] = {
+        c.chunk_id: c for c in state.get("retrieved_chunks", [])
+    }
+
+    # Add newly retrieved chunks, keeping highest score per chunk_id
     for results in all_results:
         for chunk in results:
-            if chunk.chunk_id not in seen or chunk.score > seen[chunk.chunk_id].score:
-                seen[chunk.chunk_id] = chunk
+            if chunk.chunk_id not in accumulated or chunk.score > accumulated[chunk.chunk_id].score:
+                accumulated[chunk.chunk_id] = chunk
 
-    merged = sorted(seen.values(), key=lambda c: c.score, reverse=True)
+    merged = sorted(accumulated.values(), key=lambda c: c.score, reverse=True)
 
     log.info(
-        "Retriever: %d unique chunks from %d sub-queries",
+        "Retriever: %d unique chunks total (%d new sub-queries, iteration %d)",
         len(merged),
         len(sub_queries),
+        state.get("iteration_count", 0),
     )
 
     return {"retrieved_chunks": merged, "status": "synthesizing"}
