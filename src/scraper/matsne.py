@@ -1,135 +1,153 @@
 """
 Scraper for matsne.gov.ge - the Georgian legislative portal.
-Uses httpx (async HTTP) + BeautifulSoup for parsing static HTML.
+Uses Playwright for JS-rendered content (the document viewer renders articles dynamically).
 Targets the Georgian Tax Code in both Georgian (ka) and English (en).
 """
 
 import asyncio
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import AsyncIterator
 
-import httpx
 from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
 
 from src.scraper.change_detector import compute_hash, has_changed
 from src.scraper.models import RawDocument
 
 MATSNE_BASE = "https://matsne.gov.ge"
 
-# Tax Code document IDs on matsne.gov.ge
 TAX_CODE_URLS = {
     "ka": "https://matsne.gov.ge/ka/document/view/1043717",
     "en": "https://matsne.gov.ge/en/document/view/1043717",
 }
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; RSHub-Scraper/1.0; research project)",
-    "Accept-Language": "ka,en;q=0.9",
-}
+PAGE_TIMEOUT = 60_000  # ms — matsne.gov.ge is slow
 
 
-async def _fetch(client: httpx.AsyncClient, url: str) -> str:
-    resp = await client.get(url, timeout=30.0)
-    resp.raise_for_status()
-    return resp.text
-
-
-def _parse_article_pages(soup: BeautifulSoup, lang: str) -> list[dict]:
+def _parse_articles(html: str, lang: str) -> list[dict]:
     """
-    Matsne serves the full law as a single paginated HTML document.
-    Each top-level section maps to a chapter, each article is a <div> or <article>.
-    Returns a list of {article_number, title, text, url}.
+    Parses rendered HTML for article-level content.
+    Matsne renders the law as a flat sequence of paragraphs after JS load.
+    Tries multiple container selectors; falls back to body text.
     """
-    articles = []
+    soup = BeautifulSoup(html, "lxml")
 
-    # The law text is inside .law-text or .document-content container
-    container = soup.find(class_="law-text") or soup.find(class_="document-content") or soup.find("article")
-    if not container:
-        # Fallback: grab the largest text block
-        container = soup.find("body")
-
-    # Look for article markers - Georgian: "მუხლი N" / English: "Article N"
-    article_pattern = re.compile(
-        r"(მუხლი\s+\d+|Article\s+\d+)", re.IGNORECASE | re.UNICODE
+    # Try known matsne.gov.ge post-render selectors (JS fills these in)
+    container = (
+        soup.find("div", class_="document-text")
+        or soup.find("div", class_="law-text")
+        or soup.find("div", class_="document-content")
+        or soup.find("div", id="documentText")
+        or soup.find("div", id="lawText")
+        or soup.find("main")
+        or soup.find("body")
     )
 
-    current_article: dict | None = None
-    current_text_parts: list[str] = []
+    if not container:
+        return []
 
-    for elem in container.find_all(["h1", "h2", "h3", "h4", "p", "div", "li"]):
+    # Georgian: "მუხლი N" | English: "Article N"
+    article_pattern = re.compile(
+        r"^(მუხლი\s+\d+|Article\s+\d+)", re.IGNORECASE | re.UNICODE
+    )
+
+    articles: list[dict] = []
+    current_article: dict | None = None
+    current_parts: list[str] = []
+
+    for elem in container.find_all(["h1", "h2", "h3", "h4", "p", "div", "li", "span"]):
+        # Skip deeply nested elements already captured by a parent
+        if elem.find_parent(["h1", "h2", "h3", "h4"]):
+            continue
         text = elem.get_text(separator=" ", strip=True)
-        if not text:
+        if not text or len(text) < 3:
             continue
 
         match = article_pattern.match(text)
         if match:
-            if current_article and current_text_parts:
-                current_article["text"] = "\n".join(current_text_parts).strip()
-                articles.append(current_article)
+            if current_article and current_parts:
+                current_article["text"] = "\n".join(current_parts).strip()
+                if len(current_article["text"]) > 50:  # skip empty stubs
+                    articles.append(current_article)
 
-            # Extract article number
             num_match = re.search(r"\d+", match.group(0))
             article_num = num_match.group(0) if num_match else ""
-
             current_article = {
                 "article_number": article_num,
                 "title": text[:200],
                 "text": "",
                 "lang": lang,
             }
-            current_text_parts = [text]
+            current_parts = [text]
         elif current_article is not None:
-            current_text_parts.append(text)
+            current_parts.append(text)
 
-    # Flush last article
-    if current_article and current_text_parts:
-        current_article["text"] = "\n".join(current_text_parts).strip()
-        articles.append(current_article)
+    if current_article and current_parts:
+        current_article["text"] = "\n".join(current_parts).strip()
+        if len(current_article["text"]) > 50:
+            articles.append(current_article)
 
     return articles
 
 
-def _get_last_modified(soup: BeautifulSoup) -> str:
-    """Extract the last amendment date from the matsne page."""
-    # Matsne shows "შეიცვალა: DD.MM.YYYY" or similar
+def _get_last_modified(html: str) -> str:
+    soup = BeautifulSoup(html, "lxml")
     for tag in soup.find_all(string=re.compile(r"\d{2}\.\d{2}\.\d{4}")):
-        date_match = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", tag)
-        if date_match:
-            d, m, y = date_match.groups()
-            return f"{y}-{m}-{d}"
-    return datetime.utcnow().strftime("%Y-%m-%d")
+        m = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", tag)
+        if m:
+            d, mo, y = m.groups()
+            return f"{y}-{mo}-{d}"
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 async def scrape_tax_code(lang: str = "ka") -> AsyncIterator[RawDocument]:
     """Yields one RawDocument per article of the Georgian Tax Code."""
     url = TAX_CODE_URLS.get(lang, TAX_CODE_URLS["ka"])
 
-    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
-        html = await _fetch(client, url)
-        soup = BeautifulSoup(html, "lxml")
-        last_modified = _get_last_modified(soup)
-        articles = _parse_article_pages(soup, lang)
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (compatible; RSHub-Scraper/1.0; research project)",
+            locale="ka-GE" if lang == "ka" else "en-US",
+        )
+        page = await context.new_page()
+        try:
+            await page.goto(url, timeout=PAGE_TIMEOUT, wait_until="networkidle")
+            # Give JS document viewer extra time to populate article elements
+            await page.wait_for_timeout(3000)
+            html = await page.content()
+        finally:
+            await browser.close()
 
-        for art in articles:
-            full_text = art["text"]
-            content_hash = compute_hash(full_text)
-            article_url = f"{url}#article-{art['article_number']}"
+    last_modified = _get_last_modified(html)
+    articles = _parse_articles(html, lang)
 
-            if not has_changed(article_url, content_hash):
-                continue
+    if not articles:
+        import logging
+        logging.getLogger(__name__).warning(
+            "matsne.py: no articles parsed from %s — page structure may have changed", url
+        )
 
-            yield RawDocument(
-                url=article_url,
-                source_type="tax_code",
-                language=lang,
-                raw_html="",  # not stored for size reasons
-                text=full_text,
-                title=art["title"],
-                last_modified=last_modified,
-                content_hash=content_hash,
-                article_number=art["article_number"],
-            )
+    for art in articles:
+        full_text = art["text"]
+        content_hash = compute_hash(full_text)
+        article_url = f"{url}#article-{art['article_number']}"
+
+        if not has_changed(article_url, content_hash):
+            continue
+
+        yield RawDocument(
+            url=article_url,
+            source_type="tax_code",
+            language=lang,
+            raw_html="",
+            text=full_text,
+            title=art["title"],
+            last_modified=last_modified,
+            content_hash=content_hash,
+            article_number=art["article_number"],
+        )
 
 
 async def scrape_all_tax_code() -> list[RawDocument]:
@@ -138,5 +156,5 @@ async def scrape_all_tax_code() -> list[RawDocument]:
     for lang in ("ka", "en"):
         async for doc in scrape_tax_code(lang):
             docs.append(doc)
-        await asyncio.sleep(1)  # polite delay between language versions
+        await asyncio.sleep(2)
     return docs
