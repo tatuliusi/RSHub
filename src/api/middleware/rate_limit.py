@@ -5,7 +5,7 @@ Redis sliding window rate limiter middleware.
 import time
 import logging
 
-import redis as redis_lib
+import redis.asyncio as aioredis
 from fastapi import Request, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, redis_url: str, limit: int, window_seconds: int = 60):
         super().__init__(app)
-        self.redis = redis_lib.from_url(redis_url, decode_responses=True)
+        self.redis = aioredis.from_url(redis_url, decode_responses=True)
         self.limit = limit
         self.window = window_seconds
 
@@ -36,7 +36,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         pipe.zadd(key, {str(now): now})
         pipe.zcard(key)
         pipe.expire(key, self.window)
-        _, _, count, _ = pipe.execute()
+        _, _, count, _ = await pipe.execute()
 
         if count > self.limit:
             log.warning("Rate limit exceeded for IP: %s (%d requests)", ip, count)
