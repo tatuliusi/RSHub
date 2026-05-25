@@ -99,7 +99,7 @@ def build_synthesizer_messages(
         f"[CHUNK {i+1}]\n"
         f"Source: {c.source} | Article: {c.article_number} | Language: {c.language}\n"
         f"Last modified: {c.last_modified} | URL: {c.url}\n"
-        f"Status: active\n\n"
+        f"Status: {c.status}\n\n"
         f"Parent context:\n{c.parent_text[:600] if c.parent_text else '(no parent context)'}\n\n"
         f"Relevant excerpt:\n{c.text}"
         for i, c in enumerate(chunks)
@@ -126,7 +126,7 @@ def build_critic_messages(
     from src.agents.state import RetrievedChunk, SubQuery
 
     chunks_summary = "\n".join(
-        f"  Chunk {i+1}: {c.source} | Article {c.article_number} | status=active | modified={c.last_modified}\n    Text: {c.text[:300]}..."
+        f"  Chunk {i+1}: {c.source} | Article {c.article_number} | status={c.status} | modified={c.last_modified}\n    Text: {c.text[:300]}..."
         for i, c in enumerate(chunks)
     )
 

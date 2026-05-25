@@ -45,6 +45,7 @@ def _retrieve_for_subquery(sub_query: SubQuery) -> list[RetrievedChunk]:
                 url=r.url,
                 score=r.score,
                 sub_query=sub_query.query,
+                status=r.status,
             )
         )
     return chunks

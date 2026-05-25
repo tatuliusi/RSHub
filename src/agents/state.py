@@ -28,6 +28,7 @@ class RetrievedChunk:
     url: str
     score: float
     sub_query: str
+    status: str = "active"
 
 
 @dataclass
