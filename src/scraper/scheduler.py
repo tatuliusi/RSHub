@@ -6,7 +6,6 @@ Runs as a standalone process: python -m src.scraper.scheduler
 import asyncio
 import logging
 import signal
-import sys
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -46,17 +45,13 @@ async def run_rs_ge_ingestion() -> None:
         log.exception("rs.ge ingestion job failed")
 
 
-def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+async def _async_main() -> None:
     settings = get_settings()
     scheduler = AsyncIOScheduler()
 
     scheduler.add_job(
         run_tax_code_ingestion,
-        CronTrigger.from_crontab(settings.scraper_tax_code_cron if hasattr(settings, "scraper_tax_code_cron") else "0 2 * * *"),
+        CronTrigger.from_crontab(settings.scraper_tax_code_cron),
         id="tax_code",
         name="Tax Code ingestion",
         replace_existing=True,
@@ -64,32 +59,35 @@ def main() -> None:
 
     scheduler.add_job(
         run_rs_ge_ingestion,
-        CronTrigger.from_crontab(settings.scraper_rs_ge_cron if hasattr(settings, "scraper_rs_ge_cron") else "0 */6 * * *"),
+        CronTrigger.from_crontab(settings.scraper_rs_ge_cron),
         id="rs_ge",
         name="rs.ge ingestion",
         replace_existing=True,
     )
 
     scheduler.start()
-    log.info("Scheduler started. Tax Code: daily at 02:00, rs.ge: every 6 hours.")
+    log.info("Scheduler started. Tax Code: %s, rs.ge: %s",
+             settings.scraper_tax_code_cron, settings.scraper_rs_ge_cron)
 
-    loop = asyncio.get_event_loop()
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
 
-    def _shutdown(sig, frame):
-        log.info("Shutting down scheduler...")
-        scheduler.shutdown(wait=False)
-        loop.stop()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop_event.set)
 
     try:
-        loop.run_forever()
-    except KeyboardInterrupt:
-        pass
+        await stop_event.wait()
     finally:
+        log.info("Shutting down scheduler...")
         scheduler.shutdown(wait=False)
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    asyncio.run(_async_main())
 
 
 if __name__ == "__main__":
