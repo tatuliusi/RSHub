@@ -12,7 +12,7 @@ from typing import AsyncIterator
 import httpx
 from bs4 import BeautifulSoup
 
-from src.scraper.change_detector import compute_hash, has_changed, record_hash
+from src.scraper.change_detector import compute_hash, has_changed
 from src.scraper.models import RawDocument
 
 MATSNE_BASE = "https://matsne.gov.ge"
@@ -118,8 +118,6 @@ async def scrape_tax_code(lang: str = "ka") -> AsyncIterator[RawDocument]:
 
             if not has_changed(article_url, content_hash):
                 continue
-
-            record_hash(article_url, content_hash, "tax_code")
 
             yield RawDocument(
                 url=article_url,

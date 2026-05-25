@@ -13,7 +13,7 @@ from typing import AsyncIterator
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright, Page
 
-from src.scraper.change_detector import compute_hash, has_changed, record_hash
+from src.scraper.change_detector import compute_hash, has_changed
 from src.scraper.models import RawDocument
 
 RS_BASE = "https://www.rs.ge"
@@ -134,7 +134,6 @@ async def scrape_rs_ge(seed_url: str, max_pages: int = MAX_PAGES_PER_SEED) -> As
             else:
                 content_hash = compute_hash(text)
                 if has_changed(url, content_hash):
-                    record_hash(url, content_hash, "guidance")
                     last_modified = _get_last_modified_from_html(html)
                     source_type = _guess_source_type(url, title)
 

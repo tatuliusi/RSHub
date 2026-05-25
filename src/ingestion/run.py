@@ -9,7 +9,8 @@ import logging
 
 from src.ingestion.chunker import chunk_documents, Chunk
 from src.ingestion.embedder import embed_texts
-from src.ingestion.indexer import ensure_collection, upsert_chunks
+from src.ingestion.indexer import ensure_collection, upsert_chunks, supersede_chunks_by_url
+from src.scraper.change_detector import record_hash
 from src.scraper.models import RawDocument
 
 log = logging.getLogger(__name__)
@@ -18,7 +19,12 @@ EMBED_BATCH_SIZE = 16
 
 
 async def ingest_documents(docs: list[RawDocument]) -> None:
-    """Full pipeline: chunk -> embed -> upsert into Qdrant."""
+    """Full pipeline: chunk -> embed -> upsert into Qdrant.
+
+    Hash recording happens HERE, after successful upsert, so a mid-pipeline
+    failure does not mark the document as seen and skip it on the next run.
+    Old chunks for each URL are superseded before new ones are inserted.
+    """
     if not docs:
         log.info("No documents to ingest")
         return
@@ -27,7 +33,6 @@ async def ingest_documents(docs: list[RawDocument]) -> None:
 
     # 1. Chunk
     all_chunks = chunk_documents(docs)
-    # Only embed child chunks (parents are stored but not searched directly)
     child_chunks = [c for c in all_chunks if not c.is_parent]
     parent_chunks = [c for c in all_chunks if c.is_parent]
 
@@ -41,18 +46,23 @@ async def ingest_documents(docs: list[RawDocument]) -> None:
     # 2. Ensure collection exists
     ensure_collection()
 
-    # 3. Upsert parent chunks without embeddings (stored for context retrieval)
-    # Parents need dummy vectors - we insert them with zero vectors and rely on ID retrieval
-    # Actually: parents also get embeddings for potential full-article search
-    # Embed parents in small batches to avoid OOM
+    # 3. Supersede stale chunks for every URL being re-indexed
+    for doc in docs:
+        supersede_chunks_by_url(doc.url)
+
+    # 4. Embed and upsert parent chunks
     log.info("Embedding %d parent chunks...", len(parent_chunks))
     parent_embeddings = _embed_in_batches([c.text for c in parent_chunks])
     upsert_chunks(parent_chunks, parent_embeddings)
 
-    # 4. Embed and upsert child chunks
+    # 5. Embed and upsert child chunks
     log.info("Embedding %d child chunks...", len(child_chunks))
     child_embeddings = _embed_in_batches([c.text for c in child_chunks])
     upsert_chunks(child_chunks, child_embeddings)
+
+    # 6. Record hashes only after successful ingestion
+    for doc in docs:
+        record_hash(doc.url, doc.content_hash, doc.source_type)
 
     log.info("Ingestion complete: %d total chunks indexed", len(all_chunks))
 
