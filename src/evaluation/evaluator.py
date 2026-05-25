@@ -21,13 +21,27 @@ CITATION_PATTERN = re.compile(r"\[([^\]]+)\]")
 def _citation_correctness(answer: str, required_citations: list[str]) -> float:
     """
     Checks what fraction of required citation keywords appear in the answer's citations.
+    Penalizes answers that only emit generic source names without specific article numbers.
     Returns 0.0 to 1.0.
     """
     if not required_citations:
         return 1.0
-    cited_texts = " ".join(CITATION_PATTERN.findall(answer)).lower()
-    found = sum(1 for kw in required_citations if kw.lower() in cited_texts)
-    return found / len(required_citations)
+
+    all_citations = CITATION_PATTERN.findall(answer)
+    cited_text = " ".join(all_citations).lower()
+
+    # Check that required keywords appear in citations
+    found = sum(1 for kw in required_citations if kw.lower() in cited_text)
+    keyword_score = found / len(required_citations)
+
+    # Penalise by 0.5 if no specific article number is cited at all —
+    # a pure "Tax Code" mention without any article number is not a useful citation.
+    has_specific_article = bool(
+        re.search(r"article\s+\d+|მუხლი\s+\d+", cited_text, re.IGNORECASE | re.UNICODE)
+    )
+    specificity_multiplier = 1.0 if has_specific_article else 0.5
+
+    return keyword_score * specificity_multiplier
 
 
 async def _run_pipeline(question: str) -> dict:
@@ -37,11 +51,17 @@ async def _run_pipeline(question: str) -> dict:
     graph = pipeline()
     state = build_initial_state(user_query=question, session_id="eval")
     result = await graph.ainvoke(state)
+
+    # Collect retrieved chunk texts for RAGAS faithfulness evaluation
+    chunks = result.get("retrieved_chunks", [])
+    contexts = [c.text for c in chunks] if chunks else []
+
     return {
         "answer": result.get("final_answer", ""),
         "sources": result.get("final_sources", []),
         "low_confidence": result.get("low_confidence", False),
         "iterations": result.get("iteration_count", 0),
+        "contexts": contexts,
     }
 
 
@@ -170,7 +190,7 @@ def _compute_ragas(results: list[dict], test_cases: list[dict]) -> dict:
         data = {
             "question": [r["question"] if "question" in r else tc["question"] for r, tc in zip(results, test_cases)],
             "answer": [r["answer"] for r in results],
-            "contexts": [[""] for _ in results],  # placeholder - in real eval pass retrieved chunks
+            "contexts": [r.get("contexts", []) or [""] for r in results],
             "ground_truth": [tc["reference_answer"] for tc in test_cases],
         }
         dataset = Dataset.from_dict(data)
