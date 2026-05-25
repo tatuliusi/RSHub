@@ -59,12 +59,18 @@ def ensure_collection() -> None:
     )
 
     # Payload index for fast metadata filtering
-    for field_name in ("status", "language", "source", "article_number", "is_parent"):
+    for field_name in ("status", "language", "source", "article_number"):
         client.create_payload_index(
             collection_name=settings.qdrant_collection,
             field_name=field_name,
             field_schema=PayloadSchemaType.KEYWORD,
         )
+    # is_parent is a bool — must use BOOL schema type, not KEYWORD
+    client.create_payload_index(
+        collection_name=settings.qdrant_collection,
+        field_name="is_parent",
+        field_schema=PayloadSchemaType.BOOL,
+    )
 
     log.info("Created collection '%s'", settings.qdrant_collection)
 
@@ -109,6 +115,38 @@ def upsert_chunks(chunks: list[Chunk], embeddings: list[dict[str, Any]], batch_s
         log.debug("Upserted batch %d-%d", i, i + len(batch))
 
     log.info("Upserted %d points to '%s'", len(points), settings.qdrant_collection)
+
+
+def supersede_chunks_by_url(url: str) -> int:
+    """Marks all active chunks for a given URL as superseded before re-indexing."""
+    settings = get_settings()
+    client = _get_client()
+    from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+    old_ids: list[str] = []
+    offset = None
+    while True:
+        results, next_offset = client.scroll(
+            collection_name=settings.qdrant_collection,
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="url", match=MatchValue(value=url)),
+                    FieldCondition(key="status", match=MatchValue(value="active")),
+                ]
+            ),
+            with_payload=False,
+            limit=100,
+            offset=offset,
+        )
+        old_ids.extend([str(p.id) for p in results])
+        if next_offset is None:
+            break
+        offset = next_offset
+
+    if old_ids:
+        mark_superseded(old_ids)
+        log.info("Superseded %d stale chunks for URL: %s", len(old_ids), url)
+    return len(old_ids)
 
 
 def mark_superseded(chunk_ids: list[str]) -> None:
