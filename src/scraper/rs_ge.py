@@ -6,7 +6,7 @@ Targets circulars, guidance pages, and declaration form instructions.
 
 import asyncio
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -90,7 +90,7 @@ def _get_last_modified_from_html(html: str) -> str:
         if m:
             d, mo, y = m.groups()
             return f"{y}-{mo}-{d}"
-    return datetime.utcnow().strftime("%Y-%m-%d")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _is_followable(url: str) -> bool:
