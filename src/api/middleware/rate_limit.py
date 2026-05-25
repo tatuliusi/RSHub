@@ -26,7 +26,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in ("/health", "/docs", "/openapi.json"):
             return await call_next(request)
 
-        ip = request.client.host if request.client else "unknown"
+        # X-Forwarded-For is set by reverse proxies and Docker NAT — prefer it over
+        # request.client.host, which is the gateway IP for all containerized traffic.
+        x_forwarded_for = request.headers.get("X-Forwarded-For")
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(",")[0].strip()
+        else:
+            ip = request.headers.get("X-Real-IP") or (
+                request.client.host if request.client else "unknown"
+            )
         key = f"rshub:rate:{ip}"
         now = time.time()
         window_start = now - self.window
