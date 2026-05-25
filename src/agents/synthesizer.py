@@ -11,6 +11,7 @@ import anthropic
 from src.agents.state import AgentState, Source
 from src.agents.prompts import SYNTHESIZER_SYSTEM, build_synthesizer_messages
 from src.config import get_settings
+from src.observability import observe
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ def _extract_sources(answer: str, chunks: list) -> list[Source]:
     return sources
 
 
+@observe(name="synthesizer")
 async def synthesizer_node(state: AgentState) -> dict:
     settings = get_settings()
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)

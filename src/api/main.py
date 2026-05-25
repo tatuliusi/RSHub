@@ -49,3 +49,5 @@ app.include_router(chat_router)
 @app.on_event("startup")
 async def startup():
     logging.getLogger(__name__).info("RSHub API starting up")
+    from src.observability import init_langfuse
+    init_langfuse()

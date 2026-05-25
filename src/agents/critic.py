@@ -12,10 +12,12 @@ import anthropic
 from src.agents.state import AgentState
 from src.agents.prompts import CRITIC_SYSTEM, build_critic_messages
 from src.config import get_settings
+from src.observability import observe
 
 log = logging.getLogger(__name__)
 
 
+@observe(name="critic")
 async def critic_node(state: AgentState) -> dict:
     settings = get_settings()
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)

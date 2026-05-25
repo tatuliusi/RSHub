@@ -11,10 +11,12 @@ import anthropic
 from src.agents.state import AgentState, SubQuery
 from src.agents.prompts import PLANNER_SYSTEM, build_planner_messages
 from src.config import get_settings
+from src.observability import observe
 
 log = logging.getLogger(__name__)
 
 
+@observe(name="planner")
 async def planner_node(state: AgentState) -> dict:
     settings = get_settings()
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
