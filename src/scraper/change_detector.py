@@ -1,15 +1,18 @@
 import hashlib
-import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
-from datetime import datetime
 
 DB_PATH = Path("data/cache/scraper_state.db")
 
 
 def _get_conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    # timeout=10: wait up to 10s for the lock instead of immediately raising
+    # WAL mode: allows concurrent readers + one writer, avoids "database is locked"
+    # when two scraper jobs run in parallel via APScheduler
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS document_hashes (
@@ -50,7 +53,7 @@ def record_hash(url: str, content_hash: str, source_type: str = "") -> None:
             content_hash = excluded.content_hash,
             last_seen = excluded.last_seen
         """,
-        (url, content_hash, datetime.utcnow().isoformat(), source_type),
+        (url, content_hash, datetime.now(timezone.utc).isoformat(), source_type),
     )
     conn.commit()
     conn.close()
