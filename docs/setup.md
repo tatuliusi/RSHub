@@ -87,12 +87,14 @@ PYTHONPATH=. python -m src.ingestion.run
 
 What happens during ingestion:
 
-1. **Scraper (matsne.gov.ge)**: fetches the Tax Code with httpx, parses article by article in both Georgian and English
+1. **Scraper (matsne.gov.ge)**: launches headless Chromium via Playwright, waits for the JS document viewer to render, then extracts the Tax Code article by article in both Georgian and English
 2. **Scraper (rs.ge)**: launches a headless Chromium browser, crawls guidance pages starting from the seed URLs
-3. **Change detection**: computes SHA-256 of each document's text, compares to previous run, skips unchanged documents
-4. **Chunker**: creates parent chunk (full article) + child chunks (paragraphs) for each document
-5. **Embedder**: BGE-M3 model generates dense (1024-dim) and sparse vectors for each child chunk. First run downloads the model (~2.3GB). This takes a few minutes.
-6. **Indexer**: upserts all chunks into the Qdrant collection `tax_chunks` with full metadata
+3. **Change detection**: computes SHA-256 of each document's text, compares to previous run (stored in SQLite with WAL mode), skips unchanged documents
+4. **Stale cleanup**: before re-indexing a changed document, existing active chunks for that URL are marked `superseded` in Qdrant so outdated law never appears in search results
+5. **Chunker**: creates parent chunk (full article) + child chunks (paragraphs) for each document
+6. **Embedder**: BGE-M3 model generates dense (1024-dim) and sparse vectors for each child chunk. First run downloads the model (~2.3GB). This takes a few minutes.
+7. **Indexer**: upserts all chunks into the Qdrant collection `tax_chunks` with full metadata
+8. **Hash recording**: SHA-256 hash is saved to SQLite only after a successful Qdrant upsert. If ingestion fails at any point, the document will be retried on the next run.
 
 To run only one source:
 
@@ -229,8 +231,11 @@ You need to run `make ingest` or the ingestion command in Step 4. The collection
 **BGE-M3 model download is slow**
 It downloads ~2.3GB on first use. This happens once and is cached in `~/.cache/huggingface/`. Subsequent runs load from disk in about 10-20 seconds.
 
+**matsne.gov.ge scraper returns 0 articles / a warning about page structure**
+The document viewer is JS-rendered. The scraper waits 3 extra seconds after `networkidle` for the viewer to populate. If the warning still appears, the site may have changed its markup — inspect the rendered HTML from `page.content()` and update the container selectors in `src/scraper/matsne.py`.
+
 **rs.ge scraper returns 0 documents**
-rs.ge may have changed its HTML structure or block scrapers. Try running just the matsne.gov.ge scraper first to verify the full pipeline works, then debug rs.ge separately.
+rs.ge may have changed its HTML structure or be blocking scrapers. Try running just the matsne.gov.ge scraper first to verify the full pipeline works, then debug rs.ge separately.
 
 **API returns 429 Too Many Requests**
 You hit the rate limit (10 requests/minute per IP). Wait 60 seconds or increase `RATE_LIMIT_PER_MINUTE` in `.env`.

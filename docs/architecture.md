@@ -26,13 +26,19 @@ Two scrapers handle the two site types differently.
 
 **rs.ge scraper (Playwright):** rs.ge renders content dynamically with JavaScript. Playwright controls a headless Chromium instance, waits for network idle, then extracts the rendered HTML. This handles pagination, accordion sections, and dynamically loaded tables.
 
-**matsne.gov.ge scraper (httpx + BeautifulSoup):** The legislative portal serves static HTML. Using a full browser here would be unnecessary overhead. httpx sends async HTTP requests and BeautifulSoup parses the HTML tree. This is significantly faster than Playwright for bulk document collection.
+**matsne.gov.ge scraper (Playwright):** The legislative portal uses a JavaScript document viewer to render the Tax Code — the article text is populated by client-side code after page load and is not present in the raw HTTP response. Playwright is therefore required here as well. After navigating to the document URL and waiting for network idle, the scraper waits an additional 3 seconds for the viewer to finish populating article elements, then extracts the rendered HTML. BeautifulSoup then parses the rendered content looking for article boundaries (`Article N` or `მუხლი N` patterns) across multiple possible container selectors. If no articles are found, a warning is logged so the failure is visible.
 
-The two scrapers share a common output format: a raw document record with fields for URL, fetched timestamp, raw HTML, source type (tax_code, circular, form, guidance), language (ka, en), and a SHA-256 hash of the content.
+Both scrapers share a common output format: a raw document record with fields for URL, fetched timestamp, source type (tax_code, circular, form, guidance), language (ka, en), and a SHA-256 hash of the content.
 
 ### Change Detection
 
-Before re-indexing a document, the ingestion pipeline computes the SHA-256 hash of its extracted text and compares it to the stored hash in a simple SQLite or PostgreSQL tracking table. Only documents with a changed hash get re-chunked and re-embedded. This avoids redundant embedding API calls and keeps index updates fast.
+Before re-indexing a document, the ingestion pipeline computes the SHA-256 hash of its extracted text and compares it to the stored hash in a local SQLite tracking table. Only documents with a changed hash get re-chunked and re-embedded. This avoids redundant embedding API calls and keeps index updates fast.
+
+The hash is recorded **after** a successful Qdrant upsert, not at scrape time. If embedding or indexing fails mid-pipeline, the document is not marked as seen and will be retried on the next run.
+
+The SQLite database uses WAL (Write-Ahead Log) journal mode with a 10-second busy timeout. This allows the two scraper jobs (Tax Code and rs.ge) to run concurrently in APScheduler without hitting `database is locked` errors.
+
+When a document changes and new chunks are indexed, the pipeline first marks all existing active chunks for that URL as `superseded` in Qdrant, then inserts the new chunks. This prevents stale versions of articles from accumulating in the index over time.
 
 ### Scheduling
 
@@ -130,7 +136,9 @@ For each sub-query:
 
 The hybrid search score formula is: `score = alpha * dense_score + (1 - alpha) * sparse_score`. The default alpha is 0.65, which was chosen as a starting point for Georgian text where dense vectors are less precise than for high-resource languages. This value is tuned empirically against the validation set.
 
-The final retrieved set is the union of top-5 results across all sub-queries, deduplicated by chunk ID.
+The retrieved set is the union of top-5 results across all sub-queries, deduplicated by chunk ID.
+
+**Chunk accumulation across retries:** When the Critic rejects an answer and the pipeline loops back to the Planner, the Retriever does not discard the previously collected chunks. It merges the new results with chunks from prior iterations, keeping the highest score when the same chunk appears in both. This means each successive synthesis attempt has a strictly larger and better context, rather than re-fetching identical results and producing the same rejected answer.
 
 ### Synthesizer Agent (Claude Sonnet 4.6)
 
@@ -202,11 +210,7 @@ Other endpoints:
 
 ### Rate Limiting
 
-Redis stores a sliding window counter per IP address. The limit is configurable (default: 10 requests per minute per IP). This matters both for controlling Anthropic API costs and for preventing abuse in a demo deployment.
-
-### Authentication
-
-For the thesis demo, authentication is optional but the architecture includes JWT-based auth so it can be toggled on. A `POST /auth/token` endpoint issues tokens against a static admin credential defined in the environment. This is not production auth; it is just enough to gate access to the demo.
+Redis stores a sliding window counter per real client IP. The limit is configurable (default: 10 requests per minute per IP). The middleware reads the `X-Forwarded-For` header first (set by reverse proxies and Docker NAT), then falls back to `X-Real-IP`, and finally to `request.client.host`. This ensures that when the frontend is containerized, all users are not collapsed to the same gateway IP and counted against a single shared quota.
 
 ---
 
@@ -237,9 +241,11 @@ Each citation in the response text is rendered as a clickable footnote marker. C
 
 Before the query reaches the Planner, the API checks a Redis-based semantic cache. The query is embedded with BGE-M3, and the embedding is compared to cached query embeddings using cosine similarity. If a cached query has similarity above 0.92, the cached response is returned immediately.
 
-Cache entries expire after 24 hours by default. When a scraping run detects that a source document has changed, it flushes related cache entries by source tag.
+The cache is **partitioned by `session_id`**. Each user session has its own cache namespace (`rshub:cache:{session_id}:index`), so a low-quality or wrong answer stored for one user is never served to another. Cache entries expire after 24 hours by default. When a scraping run detects that a source document has changed, it flushes all cache entries.
 
-This cache is significant for a tax system where many users ask structurally similar questions (for example, "what is the VAT threshold" in different phrasings). It reduces both latency and API cost.
+The embedding inference and cosine scan run in a thread pool (`asyncio.to_thread`) so the async event loop is never blocked during a cache lookup.
+
+This cache is significant for a tax system where many users ask structurally similar questions within the same session (for example, "what is the VAT threshold" in different phrasings). It reduces both latency and API cost.
 
 ---
 
@@ -259,11 +265,13 @@ BGE-M3 and the reranker models are loaded by the api and worker services. On CPU
 
 ## 9. Observability
 
-Langfuse is used for LLM call tracing. Every call to the Anthropic API is wrapped with a Langfuse span that records the model, input tokens, output tokens, latency, and the agent role (planner, synthesizer, critic). The LangGraph graph run is recorded as a parent trace with child spans for each agent step.
+Langfuse is used for LLM call tracing. All three agent nodes (`planner_node`, `synthesizer_node`, `critic_node`) are decorated with `@observe` from `langfuse.decorators`, which automatically captures model, input tokens, output tokens, latency, and agent role for every Anthropic API call. The `init_langfuse()` function is called at API startup and logs whether tracing is active or disabled.
+
+Tracing is opt-in: if `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are not set, the decorators are no-ops and the system runs without any observability overhead.
 
 This is useful during development to see exactly what each agent received and returned, to debug Critic rejections, and to identify which sub-queries consistently return low-quality results.
 
-Standard Python logging (structured JSON) is written to stdout so Docker logs captures it. Log level is configurable per environment.
+Standard Python logging is written to stdout so Docker logs captures it. Log level is configurable per environment.
 
 ---
 
@@ -284,7 +292,7 @@ Metrics run using RAGAS:
 
 Custom metric added on top:
 
-- **citation_correctness**: For each citation in the answer, does the cited article actually contain the stated fact? Scored as a ratio of correct citations to total citations.
+- **citation_correctness**: Checks what fraction of required citation keywords appear in the answer's bracket citations, multiplied by a 0.5 penalty if no specific article number (e.g. "Article 91") appears anywhere in the citations. A response that only emits a generic `[Tax Code]` marker without specifying an article scores at most 0.5 on this metric. RAGAS faithfulness evaluation uses the actual retrieved chunks as contexts, not empty placeholders.
 
 Results are compared against a naive RAG baseline: single retrieval, no agents, no Critic, Claude Haiku 4.5 for generation.
 
@@ -296,7 +304,7 @@ The following decisions diverge from what the original thesis proposed, with rea
 
 | Thesis | This architecture | Reason |
 |---|---|---|
-| Selenium + Playwright + BeautifulSoup | Playwright for dynamic, httpx for static | Selenium is redundant when Playwright is already present |
+| Selenium + Playwright + BeautifulSoup | Playwright for both rs.ge and matsne.gov.ge | Selenium is redundant; matsne.gov.ge also uses a JS document viewer so static httpx scraping produces empty results |
 | Claude Haiku 4.5 for all agents | Haiku for Planner and Critic, Sonnet 4.6 for Synthesizer | Synthesis quality is the most important factor in answer accuracy |
 | Retrieval unspecified as parallel or sequential | Explicit asyncio parallel retrieval per sub-query | Sequential retrieval of N sub-queries multiplies latency by N |
 | Flat article-level chunks | Parent-child chunk structure | Retrieving context-free paragraphs misses cross-reference resolution |
@@ -305,3 +313,8 @@ The following decisions diverge from what the original thesis proposed, with rea
 | No streaming | FastAPI SSE + frontend streaming | Essential for usability given multi-second pipeline latency |
 | No observability | Langfuse for agent tracing | Necessary to debug agent behavior and tune Critic thresholds |
 | No prompt caching mentioned | Anthropic prompt caching on system prompts | 90% cost reduction on cached tokens for long system prompts |
+| Sync LLM calls assumed | All agent nodes use `AsyncAnthropic` and are `async def` | Sync calls block the entire asyncio event loop — status SSE events cannot flow and concurrent requests are serialized |
+| Scraper change hash recorded on scrape | Hash recorded only after successful Qdrant upsert | A mid-pipeline failure previously marked the document as seen, causing it to be silently skipped forever on subsequent runs |
+| No stale chunk cleanup | Old chunks marked `superseded` before re-indexing the updated document | Without this, outdated tax articles accumulate in the index and continue to appear in search results |
+| Retriever discards previous chunks on retry | Retriever accumulates chunks across critic iterations | Discarding prior chunks meant each retry re-fetched the same documents and produced the same rejected answer |
+| Cache shared across all users | Cache partitioned by `session_id` | Sharing cache globally allowed a bad answer stored for one user to be served to all other users for 24 hours |

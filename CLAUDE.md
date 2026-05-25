@@ -19,8 +19,7 @@ This is a bachelor's thesis project at the Business and Technology University of
 | Reranker | bge-reranker-v2-m3 | Cross-encoder companion to BGE-M3; significantly improves precision at top-K |
 | Vector store | Qdrant | Native hybrid (dense + sparse) search, runs locally in Docker |
 | Semantic cache | Redis | Caches embedding lookups and similar-query results to cut latency and API cost |
-| Scraping (dynamic) | Playwright | Handles JS-rendered pages on rs.ge |
-| Scraping (static) | httpx + BeautifulSoup | Faster for static HTML pages on matsne.gov.ge |
+| Scraping | Playwright + BeautifulSoup | Both rs.ge and matsne.gov.ge use JS-rendered content; Playwright fetches, BS4 parses |
 | Ingestion scheduler | APScheduler | Periodic re-scraping with change detection |
 | Backend API | FastAPI (async) | SSE streaming, OpenAPI schema, async agent execution |
 | Frontend | Next.js 14 + Tailwind | Progressive response streaming, agent trace visualization |
@@ -37,7 +36,7 @@ RSHub/
 ├── src/
 │   ├── scraper/
 │   │   ├── rs_ge.py             # Playwright scraper for rs.ge
-│   │   ├── matsne.py            # httpx + BS4 scraper for matsne.gov.ge
+│   │   ├── matsne.py            # Playwright scraper for matsne.gov.ge (JS document viewer)
 │   │   ├── scheduler.py         # APScheduler setup
 │   │   └── change_detector.py  # SHA-256 hash comparison for re-indexing
 │   ├── ingestion/
@@ -49,10 +48,12 @@ RSHub/
 │   │   └── reranker.py          # bge-reranker-v2-m3 cross-encoder
 │   ├── agents/
 │   │   ├── planner.py           # Query decomposition into sub-queries
-│   │   ├── retriever.py         # Parallel retrieval per sub-query
+│   │   ├── retriever_agent.py   # Parallel retrieval per sub-query, accumulates across retries
 │   │   ├── synthesizer.py       # Answer generation with citations
 │   │   ├── critic.py            # Citation + currency + coverage checks
-│   │   └── graph.py             # LangGraph state machine definition
+│   │   ├── graph.py             # LangGraph state machine definition
+│   │   ├── prompts.py           # System prompts for all agents
+│   │   └── state.py             # AgentState TypedDict and dataclasses
 │   ├── api/
 │   │   ├── main.py              # FastAPI app with SSE endpoint
 │   │   ├── routes/
@@ -61,7 +62,8 @@ RSHub/
 │   │   └── middleware/
 │   │       └── rate_limit.py    # Redis-based rate limiting
 │   ├── cache/
-│   │   └── semantic_cache.py    # Redis + BGE-M3 query deduplication
+│   │   └── semantic_cache.py    # Redis + BGE-M3 query deduplication (session-partitioned)
+│   ├── observability.py         # Langfuse @observe re-export + init
 │   └── evaluation/
 │       ├── test_set.json        # 50 hand-crafted questions with reference answers
 │       └── evaluator.py         # RAGAS + citation_correctness scoring
@@ -114,13 +116,19 @@ TOP_K_FINAL=5            # final count after reranking
 
 ```
 User query
+  -> semantic cache check (session-partitioned, BGE-M3 similarity ≥ 0.92 → return cached)
   -> Planner (Haiku 4.5): decomposes into sub-queries
-  -> [Retriever x N] (parallel): hybrid search + rerank for each sub-query
+  -> [Retriever x N] (parallel, thread pool): hybrid search + rerank per sub-query
+       accumulates chunks across retries (does not discard prior results)
   -> Synthesizer (Sonnet 4.6): generates answer with inline citations
-  -> Critic (Haiku 4.5): checks citation accuracy, source currency, coverage
+  -> Critic (Haiku 4.5): checks citation grounding, source currency, sub-query coverage
+       uses real chunk status field (not hardcoded "active")
      - APPROVED -> stream response to user
-     - REJECTED -> back to Planner with error context (max 3 iterations)
+     - REJECTED -> back to Planner with error context (max 3 iterations → fail_safe)
 ```
+
+All LLM nodes are `async def` using `AsyncAnthropic` so the event loop is never blocked.
+All three nodes are wrapped with Langfuse `@observe` for tracing (no-op if keys not set).
 
 ## Evaluation
 
