@@ -77,8 +77,8 @@ STATUS_LABELS = {
 
 async def _stream_pipeline(request: ChatRequest):
     try:
-        # Semantic cache check
-        cached = await get_cached_response(request.query)
+        # Semantic cache check — partitioned by session so answers don't bleed across users
+        cached = await get_cached_response(request.query, session_id=request.session_id)
         if cached:
             yield _sse("status", "Retrieved from cache")
             for token in _tokenize(cached.get("answer", "")):
@@ -142,7 +142,11 @@ async def _stream_pipeline(request: ChatRequest):
 
         # Cache high-confidence answers
         if not low_confidence:
-            await set_cached_response(request.query, {"answer": answer, "sources": sources_data})
+            await set_cached_response(
+                request.query,
+                {"answer": answer, "sources": sources_data},
+                session_id=request.session_id,
+            )
 
     except Exception as e:
         log.exception("Pipeline error: %s", request.query[:80])

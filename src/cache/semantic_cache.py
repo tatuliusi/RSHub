@@ -40,15 +40,17 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-async def get_cached_response(query: str) -> dict | None:
+async def get_cached_response(query: str, session_id: str = "default") -> dict | None:
     """
-    Returns cached response if a semantically similar query was cached.
+    Returns cached response if a semantically similar query was cached for this session.
+    Partitioned by session_id so one user's answers are never served to another.
     Returns None if no match above threshold.
     """
     settings = get_settings()
     r = _get_redis()
 
-    index_data = await r.get(INDEX_KEY)
+    index_key = f"{INDEX_KEY}:{session_id}"
+    index_data = await r.get(index_key)
     if not index_data:
         return None
 
@@ -71,7 +73,7 @@ async def get_cached_response(query: str) -> dict | None:
             best_key = entry["key"]
 
     if best_score >= settings.semantic_cache_threshold and best_key:
-        cached_raw = await r.get(f"{CACHE_KEY_PREFIX}{best_key}")
+        cached_raw = await r.get(f"{CACHE_KEY_PREFIX}{session_id}:{best_key}")
         if cached_raw:
             log.info("Cache hit: similarity=%.3f for query: %s", best_score, query[:60])
             return json.loads(cached_raw)
@@ -79,8 +81,8 @@ async def get_cached_response(query: str) -> dict | None:
     return None
 
 
-async def set_cached_response(query: str, response: dict) -> None:
-    """Stores a query-response pair in the semantic cache."""
+async def set_cached_response(query: str, response: dict, session_id: str = "default") -> None:
+    """Stores a query-response pair in the semantic cache, partitioned by session."""
     settings = get_settings()
     r = _get_redis()
 
@@ -89,14 +91,15 @@ async def set_cached_response(query: str, response: dict) -> None:
     embedding = embedding["dense"]
 
     cache_key = hashlib.sha256(query.encode()).hexdigest()[:16]
+    index_key = f"{INDEX_KEY}:{session_id}"
 
     await r.setex(
-        f"{CACHE_KEY_PREFIX}{cache_key}",
+        f"{CACHE_KEY_PREFIX}{session_id}:{cache_key}",
         settings.cache_ttl_seconds,
         json.dumps(response),
     )
 
-    index_data = await r.get(INDEX_KEY)
+    index_data = await r.get(index_key)
     index: list[dict] = json.loads(index_data) if index_data else []
 
     index = [e for e in index if e["key"] != cache_key]
@@ -105,8 +108,8 @@ async def set_cached_response(query: str, response: dict) -> None:
     if len(index) > 500:
         index = index[-500:]
 
-    await r.setex(INDEX_KEY, settings.cache_ttl_seconds, json.dumps(index))
-    log.debug("Cached response for: %s", query[:60])
+    await r.setex(index_key, settings.cache_ttl_seconds, json.dumps(index))
+    log.debug("Cached response for session %s: %s", session_id, query[:60])
 
 
 async def invalidate_by_source(source_type: str) -> int:
