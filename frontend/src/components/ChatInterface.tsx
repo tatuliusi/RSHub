@@ -7,7 +7,20 @@ import { Message as MessageType, Source } from '@/types'
 import { Message } from './Message'
 import { streamChat } from '@/lib/api'
 
-const SESSION_ID = `session-${Date.now()}`
+const MAX_HISTORY_TURNS = 8
+
+function getOrCreateSessionId(): string {
+  try {
+    const key = 'rshub_session_id'
+    const stored = localStorage.getItem(key)
+    if (stored) return stored
+    const id = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    localStorage.setItem(key, id)
+    return id
+  } catch {
+    return `session-${Date.now()}`
+  }
+}
 
 const EXAMPLE_QUESTIONS = [
   'ვარ IT ფრილანსერი მცირე ბიზნესის სტატუსით. წლიური შემოსავალი 50,000 ლარია. რა გადასახადები მეკისრება?',
@@ -19,8 +32,13 @@ export function ChatInterface() {
   const [messages, setMessages] = useState<MessageType[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [sessionId, setSessionId] = useState('default')
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    setSessionId(getOrCreateSessionId())
+  }, [])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -58,13 +76,17 @@ export function ChatInterface() {
 
     setMessages(prev => [...prev, assistantMessage])
 
-    const history = messages.map(m => ({ role: m.role, content: m.content }))
+    // Only send the last N turns to keep prompt size bounded
+    const allMessages = [...messages, userMessage]
+    const history = allMessages
+      .slice(-MAX_HISTORY_TURNS)
+      .map(m => ({ role: m.role, content: m.content }))
 
     try {
       let accumulatedText = ''
       const steps: string[] = []
 
-      for await (const event of streamChat(query, SESSION_ID, history)) {
+      for await (const event of streamChat(query, sessionId, history)) {
         if (event.type === 'status' && event.content) {
           steps.push(event.content)
           setMessages(prev =>
@@ -117,7 +139,7 @@ export function ChatInterface() {
       setIsLoading(false)
       inputRef.current?.focus()
     }
-  }, [messages, isLoading])
+  }, [messages, isLoading, sessionId])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
