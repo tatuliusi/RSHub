@@ -14,7 +14,7 @@ Event types:
 import asyncio
 import json
 import logging
-from dataclasses import asdict, fields
+from dataclasses import asdict
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -25,6 +25,9 @@ from src.cache.semantic_cache import get_cached_response, set_cached_response
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+# Maximum conversation turns to include in context (keeps prompt size bounded)
+_MAX_HISTORY_TURNS = 8
 
 
 class ChatRequest(BaseModel):
@@ -77,8 +80,8 @@ STATUS_LABELS = {
 
 async def _stream_pipeline(request: ChatRequest):
     try:
-        # Semantic cache check — partitioned by session so answers don't bleed across users
-        cached = await get_cached_response(request.query, session_id=request.session_id)
+        # Global semantic cache check — cross-session, critic-approved answers only
+        cached = await get_cached_response(request.query)
         if cached:
             yield _sse("status", "Retrieved from cache")
             for token in _tokenize(cached.get("answer", "")):
@@ -90,16 +93,17 @@ async def _stream_pipeline(request: ChatRequest):
             return
 
         graph = pipeline()
+        # Trim history to avoid unbounded prompt growth
+        trimmed_history = request.conversation_history[-_MAX_HISTORY_TURNS:]
         initial_state = build_initial_state(
             user_query=request.query,
             session_id=request.session_id,
-            conversation_history=request.conversation_history,
+            conversation_history=trimmed_history,
         )
 
         prev_status = ""
         final_state = None
 
-        # stream_mode="values" yields the complete state after each node runs
         async for state_snapshot in graph.astream(initial_state, stream_mode="values"):
             final_state = state_snapshot
             status = state_snapshot.get("status", "")
@@ -109,7 +113,6 @@ async def _stream_pipeline(request: ChatRequest):
                 label = STATUS_LABELS.get(status, status)
                 yield _sse("status", label)
 
-            # Notify on Critic rejection with iteration count
             iteration = state_snapshot.get("iteration_count", 0)
             verdict = state_snapshot.get("critic_verdict", "")
             if verdict == "REJECTED" and iteration > 0:
@@ -129,23 +132,20 @@ async def _stream_pipeline(request: ChatRequest):
             yield _sse("done", "")
             return
 
-        # Stream answer tokens
         for token in _tokenize(answer):
             yield _sse("token", token)
             await asyncio.sleep(0)
 
-        # Send sources and metadata
         sources_data = [_source_to_dict(s) for s in sources]
         yield _sse("sources", {"sources": sources_data})
         yield _sse("meta", {"low_confidence": low_confidence, "cached": False})
         yield _sse("done", "")
 
-        # Cache high-confidence answers
+        # Cache high-confidence answers globally for future users
         if not low_confidence:
             await set_cached_response(
                 request.query,
                 {"answer": answer, "sources": sources_data},
-                session_id=request.session_id,
             )
 
     except Exception as e:
