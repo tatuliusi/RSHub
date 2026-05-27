@@ -5,14 +5,16 @@ both dense and sparse vectors plus metadata payload.
 """
 
 import logging
+from functools import lru_cache
 from typing import Any
 
-from qdrant_client import QdrantClient, AsyncQdrantClient
+from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
     VectorParams,
     SparseVectorParams,
     SparseIndexParams,
+    HnswConfigDiff,
     PointStruct,
     SparseVector,
     PayloadSchemaType,
@@ -28,6 +30,7 @@ DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
 
 
+@lru_cache(maxsize=1)
 def _get_client() -> QdrantClient:
     settings = get_settings()
     return QdrantClient(url=settings.qdrant_url)
@@ -49,6 +52,9 @@ def ensure_collection() -> None:
             DENSE_VECTOR_NAME: VectorParams(
                 size=DENSE_DIM,
                 distance=Distance.COSINE,
+                # Higher m and ef_construct improve recall at modest indexing cost.
+                # Matters for legal text where precision-at-K is critical.
+                hnsw_config=HnswConfigDiff(m=32, ef_construct=200),
             )
         },
         sparse_vectors_config={
@@ -58,14 +64,12 @@ def ensure_collection() -> None:
         },
     )
 
-    # Payload index for fast metadata filtering
     for field_name in ("status", "language", "source", "article_number"):
         client.create_payload_index(
             collection_name=settings.qdrant_collection,
             field_name=field_name,
             field_schema=PayloadSchemaType.KEYWORD,
         )
-    # is_parent is a bool — must use BOOL schema type, not KEYWORD
     client.create_payload_index(
         collection_name=settings.qdrant_collection,
         field_name="is_parent",
