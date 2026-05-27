@@ -7,7 +7,7 @@ through chunking -> embedding -> indexing.
 import asyncio
 import logging
 
-from src.ingestion.chunker import chunk_documents, Chunk
+from src.ingestion.chunker import chunk_documents
 from src.ingestion.embedder import embed_texts
 from src.ingestion.indexer import ensure_collection, upsert_chunks, supersede_chunks_by_url
 from src.scraper.change_detector import record_hash
@@ -21,9 +21,10 @@ EMBED_BATCH_SIZE = 16
 async def ingest_documents(docs: list[RawDocument]) -> None:
     """Full pipeline: chunk -> embed -> upsert into Qdrant.
 
-    Hash recording happens HERE, after successful upsert, so a mid-pipeline
+    Hash recording happens after successful upsert, so a mid-pipeline
     failure does not mark the document as seen and skip it on the next run.
     Old chunks for each URL are superseded before new ones are inserted.
+    Embedding runs in a thread pool to avoid blocking the event loop.
     """
     if not docs:
         log.info("No documents to ingest")
@@ -31,7 +32,6 @@ async def ingest_documents(docs: list[RawDocument]) -> None:
 
     log.info("Ingesting %d documents", len(docs))
 
-    # 1. Chunk
     all_chunks = chunk_documents(docs)
     child_chunks = [c for c in all_chunks if not c.is_parent]
     parent_chunks = [c for c in all_chunks if c.is_parent]
@@ -43,24 +43,23 @@ async def ingest_documents(docs: list[RawDocument]) -> None:
         len(docs),
     )
 
-    # 2. Ensure collection exists
     ensure_collection()
 
-    # 3. Supersede stale chunks for every URL being re-indexed
     for doc in docs:
         supersede_chunks_by_url(doc.url)
 
-    # 4. Embed and upsert parent chunks
     log.info("Embedding %d parent chunks...", len(parent_chunks))
-    parent_embeddings = _embed_in_batches([c.text for c in parent_chunks])
+    parent_embeddings = await asyncio.to_thread(
+        _embed_in_batches, [c.text for c in parent_chunks]
+    )
     upsert_chunks(parent_chunks, parent_embeddings)
 
-    # 5. Embed and upsert child chunks
     log.info("Embedding %d child chunks...", len(child_chunks))
-    child_embeddings = _embed_in_batches([c.text for c in child_chunks])
+    child_embeddings = await asyncio.to_thread(
+        _embed_in_batches, [c.text for c in child_chunks]
+    )
     upsert_chunks(child_chunks, child_embeddings)
 
-    # 6. Record hashes only after successful ingestion
     for doc in docs:
         record_hash(doc.url, doc.content_hash, doc.source_type)
 
@@ -71,8 +70,7 @@ def _embed_in_batches(texts: list[str]) -> list[dict]:
     all_embeddings = []
     for i in range(0, len(texts), EMBED_BATCH_SIZE):
         batch = texts[i : i + EMBED_BATCH_SIZE]
-        embeddings = embed_texts(batch)
-        all_embeddings.extend(embeddings)
+        all_embeddings.extend(embed_texts(batch))
         log.debug("Embedded batch %d-%d", i, i + len(batch))
     return all_embeddings
 
@@ -87,8 +85,6 @@ async def run_full_ingestion() -> None:
     tax_code_docs = await scrape_all_tax_code()
     log.info("Scraped %d Tax Code articles", len(tax_code_docs))
     await ingest_documents(tax_code_docs)
-
-    await asyncio.sleep(2)
 
     rs_ge_docs = await scrape_all_rs_ge()
     log.info("Scraped %d rs.ge documents", len(rs_ge_docs))
