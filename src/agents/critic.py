@@ -6,8 +6,10 @@ Uses Claude Haiku 4.5.
 
 import json
 import logging
+from functools import lru_cache
 
 import anthropic
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from src.agents.state import AgentState
 from src.agents.prompts import CRITIC_SYSTEM, build_critic_messages
@@ -16,12 +18,44 @@ from src.observability import observe
 
 log = logging.getLogger(__name__)
 
+_RETRYABLE = (
+    anthropic.RateLimitError,
+    anthropic.APITimeoutError,
+    anthropic.APIConnectionError,
+    anthropic.InternalServerError,
+)
+
+
+@lru_cache(maxsize=1)
+def _get_client() -> anthropic.AsyncAnthropic:
+    return anthropic.AsyncAnthropic(api_key=get_settings().anthropic_api_key)
+
+
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type(_RETRYABLE),
+    reraise=True,
+)
+async def _call_api(messages: list[dict]) -> str:
+    settings = get_settings()
+    response = await _get_client().messages.create(
+        model=settings.critic_model,
+        max_tokens=512,
+        system=[
+            {
+                "type": "text",
+                "text": CRITIC_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        messages=messages,
+    )
+    return response.content[0].text.strip()
+
 
 @observe(name="critic")
 async def critic_node(state: AgentState) -> dict:
-    settings = get_settings()
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-
     draft = state.get("draft_answer", "")
     chunks = state.get("retrieved_chunks", [])
     sub_queries = state.get("sub_queries", [])
@@ -41,20 +75,7 @@ async def critic_node(state: AgentState) -> dict:
         sub_queries=sub_queries,
     )
 
-    response = await client.messages.create(
-        model=settings.critic_model,
-        max_tokens=512,
-        system=[
-            {
-                "type": "text",
-                "text": CRITIC_SYSTEM,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=messages,
-    )
-
-    raw = response.content[0].text.strip()
+    raw = await _call_api(messages)
 
     try:
         parsed = json.loads(raw)

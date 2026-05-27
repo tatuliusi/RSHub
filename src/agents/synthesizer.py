@@ -5,8 +5,10 @@ Uses Claude Sonnet 4.6 with prompt caching on the system prompt.
 
 import logging
 import re
+from functools import lru_cache
 
 import anthropic
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from src.agents.state import AgentState, Source
 from src.agents.prompts import SYNTHESIZER_SYSTEM, build_synthesizer_messages
@@ -18,16 +20,26 @@ log = logging.getLogger(__name__)
 # Matches citations like [Tax Code, Article 91] or [rs.ge guidance: VAT]
 CITATION_PATTERN = re.compile(r"\[([^\]]+)\]")
 
+_RETRYABLE = (
+    anthropic.RateLimitError,
+    anthropic.APITimeoutError,
+    anthropic.APIConnectionError,
+    anthropic.InternalServerError,
+)
+
+
+@lru_cache(maxsize=1)
+def _get_client() -> anthropic.AsyncAnthropic:
+    return anthropic.AsyncAnthropic(api_key=get_settings().anthropic_api_key)
+
 
 def _match_citation(cited: str, chunk) -> bool:
     """Returns True if `cited` (text inside brackets) refers to this chunk."""
     cited_lower = cited.lower()
     if chunk.article_number:
-        # Require word-boundary match: "article 91" must not match "article 910"
         pattern = r"(?:article|მუხლი)\s+" + re.escape(chunk.article_number) + r"\b"
         if re.search(pattern, cited_lower, re.IGNORECASE | re.UNICODE):
             return True
-    # Title match only when title is long enough to be unambiguous
     if chunk.title and len(chunk.title) > 3:
         if chunk.title.lower() in cited_lower:
             return True
@@ -36,10 +48,7 @@ def _match_citation(cited: str, chunk) -> bool:
 
 def _extract_sources(answer: str, chunks: list) -> list[Source]:
     """Extracts source metadata for all cited articles in the answer."""
-    # Filter to bracket contents that look like citations (not markdown links)
     raw_cited = CITATION_PATTERN.findall(answer)
-    # Exclude markdown-style link labels "[text](url)" by checking next char would be "("
-    # CITATION_PATTERN.findall already strips the brackets, so just filter obvious non-citations
     cited_texts = [c for c in raw_cited if "http" not in c and len(c) > 2]
 
     sources: list[Source] = []
@@ -61,11 +70,31 @@ def _extract_sources(answer: str, chunks: list) -> list[Source]:
     return sources
 
 
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type(_RETRYABLE),
+    reraise=True,
+)
+async def _call_api(messages: list[dict]) -> str:
+    settings = get_settings()
+    response = await _get_client().messages.create(
+        model=settings.synthesizer_model,
+        max_tokens=2048,
+        system=[
+            {
+                "type": "text",
+                "text": SYNTHESIZER_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        messages=messages,
+    )
+    return response.content[0].text.strip()
+
+
 @observe(name="synthesizer")
 async def synthesizer_node(state: AgentState) -> dict:
-    settings = get_settings()
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-
     sub_queries = state.get("sub_queries", [])
     chunks = state.get("retrieved_chunks", [])
 
@@ -83,20 +112,7 @@ async def synthesizer_node(state: AgentState) -> dict:
         chunks=chunks,
     )
 
-    response = await client.messages.create(
-        model=settings.synthesizer_model,
-        max_tokens=2048,
-        system=[
-            {
-                "type": "text",
-                "text": SYNTHESIZER_SYSTEM,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=messages,
-    )
-
-    draft = response.content[0].text.strip()
+    draft = await _call_api(messages)
     sources = _extract_sources(draft, chunks)
 
     log.info(
