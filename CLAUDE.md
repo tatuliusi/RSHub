@@ -18,7 +18,7 @@ This is a bachelor's thesis project at the Business and Technology University of
 | Embeddings | BGE-M3 (FlagEmbedding) | Best multilingual embedding model with Georgian support, 8192-token context |
 | Reranker | bge-reranker-v2-m3 | Cross-encoder companion to BGE-M3; significantly improves precision at top-K |
 | Vector store | Qdrant | Native hybrid (dense + sparse) search, runs locally in Docker |
-| Semantic cache | Redis | Caches embedding lookups and similar-query results to cut latency and API cost |
+| Semantic cache | Redis + NumPy | Global cross-session cache; embeddings stored as binary float32, similarity via numpy matmul |
 | Scraping | Playwright + BeautifulSoup | Both rs.ge and matsne.gov.ge use JS-rendered content; Playwright fetches, BS4 parses |
 | Ingestion scheduler | APScheduler | Periodic re-scraping with change detection |
 | Backend API | FastAPI (async) | SSE streaming, OpenAPI schema, async agent execution |
@@ -105,21 +105,25 @@ REDIS_URL=redis://localhost:6379
 LANGFUSE_PUBLIC_KEY=
 LANGFUSE_SECRET_KEY=
 LANGFUSE_HOST=https://cloud.langfuse.com
-BGE_M3_DEVICE=cpu        # or cuda
+BGE_M3_DEVICE=cpu         # or cuda
 MAX_CRITIC_ITERATIONS=3
-HYBRID_ALPHA=0.65        # weight for dense vs sparse (0=sparse only, 1=dense only)
-TOP_K_RETRIEVAL=20       # initial retrieval count before reranking
-TOP_K_FINAL=5            # final count after reranking
+TOP_K_RETRIEVAL=20        # initial retrieval count before reranking
+TOP_K_FINAL=8             # final count after reranking (increased from 5)
+MAX_CONTEXT_CHUNKS=50     # hard cap on accumulated chunks across retries
+ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 ```
 
 ## Agent Flow Summary
 
 ```
 User query
-  -> semantic cache check (session-partitioned, BGE-M3 similarity ≥ 0.92 → return cached)
+  -> semantic cache check (global/cross-session, BGE-M3 similarity ≥ 0.92 → return cached;
+       only critic-APPROVED answers are stored so cross-user serving is safe)
   -> Planner (Haiku 4.5): decomposes into sub-queries
   -> [Retriever x N] (parallel, thread pool): hybrid search + rerank per sub-query
-       accumulates chunks across retries (does not discard prior results)
+       source_hint filter applied when Planner sets it to tax_code/circular/form/guidance
+       accumulates chunks across retries (capped at MAX_CONTEXT_CHUNKS=50)
+       parent texts fetched in a single batch call, not N individual calls
   -> Synthesizer (Sonnet 4.6): generates answer with inline citations
   -> Critic (Haiku 4.5): checks citation grounding, source currency, sub-query coverage
        uses real chunk status field (not hardcoded "active")
@@ -138,4 +142,4 @@ Run RAGAS evaluation against the 50-question test set:
 python -m src.evaluation.evaluator --test-set src/evaluation/test_set.json
 ```
 
-Metrics: faithfulness, answer_relevancy, context_precision, context_recall, citation_correctness (custom).
+Metrics: faithfulness, answer_relevancy, context_precision, context_recall (all via RAGAS), citation_correctness (custom).
