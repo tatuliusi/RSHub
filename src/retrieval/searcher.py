@@ -1,10 +1,12 @@
 """
 Hybrid search over Qdrant using dense + sparse vectors with RRF fusion.
+RRF (Reciprocal Rank Fusion) is rank-based and does not take an alpha weight;
+see config.py — hybrid_alpha was removed as it had no effect.
 """
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from functools import lru_cache
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -15,10 +17,6 @@ from qdrant_client.models import (
     FieldCondition,
     MatchValue,
     SparseVector,
-    NamedSparseVector,
-    NamedVector,
-    SearchRequest,
-    QueryRequest,
 )
 
 from src.config import get_settings
@@ -26,6 +24,9 @@ from src.ingestion.embedder import embed_query
 from src.ingestion.indexer import DENSE_VECTOR_NAME, SPARSE_VECTOR_NAME
 
 log = logging.getLogger(__name__)
+
+# Source hint values that map to the "source" payload field
+_VALID_SOURCE_HINTS = {"tax_code", "circular", "form", "guidance"}
 
 
 @dataclass
@@ -43,6 +44,7 @@ class SearchResult:
     status: str
 
 
+@lru_cache(maxsize=1)
 def _get_client() -> QdrantClient:
     settings = get_settings()
     return QdrantClient(url=settings.qdrant_url)
@@ -69,16 +71,17 @@ def hybrid_search(
     query: str,
     top_k: int | None = None,
     language_filter: str | None = None,
+    source_hint: str | None = None,
 ) -> list[SearchResult]:
     """
     Runs hybrid search using Qdrant's native RRF fusion over dense and sparse vectors.
     Only returns active (non-superseded) child chunks.
+    source_hint filters by document type when set to a value other than "any".
     """
     settings = get_settings()
     client = _get_client()
     limit = top_k or settings.top_k_retrieval
 
-    # Embed the query (dense + sparse)
     embedding = embed_query(query)
 
     sparse_vec = SparseVector(
@@ -86,7 +89,6 @@ def hybrid_search(
         values=list(embedding["sparse"].values()),
     )
 
-    # Build metadata filter: active child chunks only
     must_conditions = [
         FieldCondition(key="status", match=MatchValue(value="active")),
         FieldCondition(key="is_parent", match=MatchValue(value=False)),
@@ -95,10 +97,13 @@ def hybrid_search(
         must_conditions.append(
             FieldCondition(key="language", match=MatchValue(value=language_filter))
         )
+    if source_hint and source_hint in _VALID_SOURCE_HINTS:
+        must_conditions.append(
+            FieldCondition(key="source", match=MatchValue(value=source_hint))
+        )
 
     query_filter = Filter(must=must_conditions)
 
-    # Hybrid search with RRF fusion
     results = client.query_points(
         collection_name=settings.qdrant_collection,
         prefetch=[
@@ -123,15 +128,24 @@ def hybrid_search(
     return [_payload_to_result(p) for p in results.points]
 
 
-def get_parent_text(parent_id: str) -> str:
-    """Fetches the parent chunk text for context enrichment."""
+def get_parent_texts_batch(parent_ids: list[str]) -> dict[str, str]:
+    """
+    Fetches multiple parent chunk texts in a single Qdrant call.
+    Returns a mapping of parent_id -> text.
+    """
+    if not parent_ids:
+        return {}
     settings = get_settings()
     client = _get_client()
     points = client.retrieve(
         collection_name=settings.qdrant_collection,
-        ids=[parent_id],
+        ids=parent_ids,
         with_payload=True,
     )
-    if points:
-        return points[0].payload.get("text", "")
-    return ""
+    return {str(p.id): p.payload.get("text", "") for p in points}
+
+
+def get_parent_text(parent_id: str) -> str:
+    """Fetches a single parent chunk text. Prefer get_parent_texts_batch for bulk lookups."""
+    result = get_parent_texts_batch([parent_id])
+    return result.get(parent_id, "")
