@@ -8,12 +8,6 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
-      start_period: 30s
 
   redis:
     image: redis:7.4-alpine
@@ -43,7 +37,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       qdrant:
-        condition: service_healthy
+        condition: service_started
       redis:
         condition: service_healthy
     volumes:
@@ -62,7 +56,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       qdrant:
-        condition: service_healthy
+        condition: service_started
       redis:
         condition: service_healthy
     volumes:
