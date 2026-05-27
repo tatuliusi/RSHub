@@ -3,6 +3,7 @@ FastAPI application entry point.
 """
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,24 +18,35 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    log = logging.getLogger(__name__)
+    log.info("RSHub API starting up (allowed origins: %s)", settings.allowed_origins)
+    from src.observability import init_langfuse
+    init_langfuse()
+    yield
+    log.info("RSHub API shutting down")
+
+
 settings = get_settings()
 
 app = FastAPI(
     title="RSHub Tax RAG API",
     description="Multi-agent RAG system for Georgian tax consultation",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
-# CORS - allow frontend origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Rate limiting
 app.add_middleware(
     RateLimitMiddleware,
     redis_url=settings.redis_url,
@@ -44,10 +56,3 @@ app.add_middleware(
 
 app.include_router(health_router)
 app.include_router(chat_router)
-
-
-@app.on_event("startup")
-async def startup():
-    logging.getLogger(__name__).info("RSHub API starting up")
-    from src.observability import init_langfuse
-    init_langfuse()
