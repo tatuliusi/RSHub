@@ -1,19 +1,65 @@
 'use client'
 
-import { ExternalLink, BookOpen, ChevronDown, ChevronUp } from 'lucide-react'
 import { useState } from 'react'
+import { ExternalLink, BookOpen, ChevronDown, ChevronUp, FileText, FileCheck, ClipboardList, Lightbulb } from 'lucide-react'
 import { Source } from '@/types'
 
 interface SourcePanelProps {
   sources: Source[]
-  lowConfidence: boolean
+  lowConfidence?: boolean
 }
 
-const SOURCE_LABELS: Record<string, string> = {
-  tax_code: 'Tax Code',
-  circular: 'Circular',
-  form: 'Form',
-  guidance: 'Guidance',
+type SourceConfig = {
+  label: string
+  Icon: React.ElementType
+  color: string
+  bg: string
+  border: string
+  badge: string
+}
+
+const SOURCE_CONFIG: Record<string, SourceConfig> = {
+  tax_code: {
+    label: 'Tax Code',
+    Icon: FileText,
+    color: 'text-brand-600',
+    bg: 'bg-brand-50',
+    border: 'border-brand-100',
+    badge: 'bg-brand-100 text-brand-700',
+  },
+  circular: {
+    label: 'Circular',
+    Icon: FileCheck,
+    color: 'text-emerald-600',
+    bg: 'bg-emerald-50',
+    border: 'border-emerald-100',
+    badge: 'bg-emerald-100 text-emerald-700',
+  },
+  form: {
+    label: 'Form',
+    Icon: ClipboardList,
+    color: 'text-violet-600',
+    bg: 'bg-violet-50',
+    border: 'border-violet-100',
+    badge: 'bg-violet-100 text-violet-700',
+  },
+  guidance: {
+    label: 'Guidance',
+    Icon: Lightbulb,
+    color: 'text-amber-600',
+    bg: 'bg-amber-50',
+    border: 'border-amber-100',
+    badge: 'bg-amber-100 text-amber-700',
+  },
+}
+
+const DEFAULT_CONFIG: SourceConfig = {
+  label: 'Source',
+  Icon: BookOpen,
+  color: 'text-slate-600',
+  bg: 'bg-slate-50',
+  border: 'border-slate-200',
+  badge: 'bg-slate-100 text-slate-600',
 }
 
 export function SourcePanel({ sources, lowConfidence }: SourcePanelProps) {
@@ -22,51 +68,78 @@ export function SourcePanel({ sources, lowConfidence }: SourcePanelProps) {
   if (sources.length === 0) return null
 
   return (
-    <div className="mt-3">
-      {lowConfidence && (
-        <div className="mb-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700 border border-amber-200">
-          This answer could not be fully verified. Please check the cited sources directly.
-        </div>
-      )}
-
+    <div className="mt-2.5 w-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      {/* Toggle header */}
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 text-xs font-medium text-brand-600 hover:text-brand-700"
+        className="flex w-full items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-slate-50"
       >
-        <BookOpen size={13} />
-        {sources.length} source{sources.length !== 1 ? 's' : ''} cited
-        {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        <BookOpen size={13} className="shrink-0 text-slate-400" />
+        <span className="flex-1 text-xs font-medium text-slate-600">
+          Sources cited
+          <span className="ml-1.5 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-normal text-slate-500">
+            {sources.length}
+          </span>
+        </span>
+        {open ? (
+          <ChevronUp size={13} className="text-slate-400" />
+        ) : (
+          <ChevronDown size={13} className="text-slate-400" />
+        )}
       </button>
 
       {open && (
-        <div className="mt-2 space-y-1.5">
-          {sources.map((source, i) => (
-            <div
-              key={i}
-              className="flex items-start justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
-            >
-              <div className="min-w-0">
-                <span className="inline-block rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-medium text-brand-700 mr-1.5">
-                  {SOURCE_LABELS[source.source_type] || source.source_type}
-                  {source.article_number ? ` ${source.article_number}` : ''}
-                </span>
-                <span className="text-slate-700">{source.title}</span>
-                <div className="mt-0.5 text-slate-400">
-                  Last updated: {source.last_modified}
-                </div>
-              </div>
-              {source.url && (
-                <a
-                  href={source.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="shrink-0 text-slate-400 hover:text-brand-500"
+        <div className="border-t border-slate-100 px-3 pb-3 pt-2">
+          <div className="space-y-2">
+            {sources.map((source, i) => {
+              const cfg = SOURCE_CONFIG[source.source_type] ?? DEFAULT_CONFIG
+              const { Icon } = cfg
+              return (
+                <div
+                  key={i}
+                  className={`flex items-start gap-3 rounded-lg border ${cfg.border} ${cfg.bg} px-3 py-2.5 transition-colors hover:brightness-95`}
                 >
-                  <ExternalLink size={13} />
-                </a>
-              )}
-            </div>
-          ))}
+                  {/* Icon */}
+                  <div className="mt-0.5 shrink-0">
+                    <Icon size={14} className={cfg.color} />
+                  </div>
+
+                  {/* Content */}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
+                      <span className={`inline-block rounded-md px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${cfg.badge}`}>
+                        {cfg.label}
+                      </span>
+                      {source.article_number && (
+                        <span className="text-[10px] font-semibold text-slate-600">
+                          Art. {source.article_number}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-slate-700 leading-snug">{source.title}</div>
+                    {source.last_modified && (
+                      <div className="mt-0.5 text-[10px] text-slate-400">
+                        Updated {source.last_modified}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* External link */}
+                  {source.url && (
+                    <a
+                      href={source.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={`mt-0.5 shrink-0 transition-colors ${cfg.color} opacity-60 hover:opacity-100`}
+                      title="Open source"
+                    >
+                      <ExternalLink size={13} />
+                    </a>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
     </div>
