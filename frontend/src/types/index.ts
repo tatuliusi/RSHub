@@ -17,6 +17,13 @@ export interface Message {
   timestamp: Date
 }
 
+export interface ConversationSession {
+  id: string
+  title: string
+  timestamp: number
+  messageCount: number
+}
+
 export type StreamEventType = 'status' | 'token' | 'sources' | 'meta' | 'done' | 'error'
 
 export interface StreamEvent {
